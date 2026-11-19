@@ -21,6 +21,10 @@ public class ImageKeyValuePair {
      */
     private final String tag;
     /**
+     * The digest of the base image (e.g. {@code sha256:...}), when the reference pins one
+     */
+    private final String digest;
+    /**
      * Comment starting with #
      */
     private final String comments;
@@ -59,29 +63,25 @@ public class ImageKeyValuePair {
                 replaceFirst(IMAGE, "").replaceFirst(":", "").
                 trim();
 
-        String[] imageAndTag = lineWithoutImageKey.split(":");
-        if (StringUtils.isNotEmpty(lineWithoutImageKey) && imageAndTag.length > 0) {
-            baseImageName = imageAndTag[0];
-            if (imageAndTag.length > 1) {
-                tag = imageAndTag[1];
-            } else {
-                tag = null;
-            }
-        } else {
-            baseImageName = null;
-            tag = null;
-        }
+        // Parse name, tag and any pinned digest. The tag is the part after the last ':'
+        // following the last '/', so registry hosts with ports are parsed correctly.
+        ImageReference imageReference = ImageReference.parse(lineWithoutImageKey);
+        baseImageName = imageReference.getName();
+        tag = imageReference.getTag();
+        digest = imageReference.getDigest();
     }
 
     /**
      * Internal API to get a new ComposeImageValuePair from an existing object
      * @param baseImageName baseImageName to add
      * @param tag tag to add
+     * @param digest digest to add
      * @param comments comments to add
      */
-    private ImageKeyValuePair(String baseImageName, String tag, String comments, String spaces) {
+    private ImageKeyValuePair(String baseImageName, String tag, String digest, String comments, String spaces) {
         this.baseImageName = baseImageName;
         this.tag = tag;
+        this.digest = digest;
         this.comments = comments;
         this.spaces = spaces;
     }
@@ -111,7 +111,26 @@ public class ImageKeyValuePair {
      * @return a new image instruction with the new image tag
      */
     public ImageKeyValuePair getImageKeyValuePairWithNewTag(String newTag) {
-        return new ImageKeyValuePair(baseImageName, newTag, comments, spaces);
+        return new ImageKeyValuePair(baseImageName, newTag, digest, comments, spaces);
+    }
+
+    /**
+     * Get a new {@code ImageKeyValuePair} the same as this but with both the tag and the
+     * digest replaced. Tag and digest must always be written back together: the digest is
+     * what determines the pulled content.
+     * @param newTag the new image tag
+     * @param newDigest the digest that {@code newTag} currently resolves to
+     * @return a new image instruction with the new image tag and digest
+     */
+    public ImageKeyValuePair getImageKeyValuePairWithNewTagAndDigest(String newTag, String newDigest) {
+        return new ImageKeyValuePair(baseImageName, newTag, newDigest, comments, spaces);
+    }
+
+    /**
+     * @return this instruction's image reference (name, tag and digest)
+     */
+    public ImageReference getImageReference() {
+        return new ImageReference(baseImageName, tag, digest);
     }
 
     /**
@@ -136,6 +155,9 @@ public class ImageKeyValuePair {
         stringBuilder.append(baseImageName);
         if (hasTag()) {
             stringBuilder.append(String.format(":%s", tag.trim()));
+        }
+        if (hasDigest()) {
+            stringBuilder.append(String.format("@%s", digest.trim()));
         }
 
         if (hasComments()) {
@@ -166,6 +188,17 @@ public class ImageKeyValuePair {
      */
     public boolean hasTag() {
         return tag != null;
+    }
+
+    /**
+     * @return whether the {@code ComposeImageValuePair} pins a {@code digest}
+     */
+    public boolean hasDigest() {
+        return digest != null;
+    }
+
+    public String getDigest() {
+        return digest;
     }
 
     /**

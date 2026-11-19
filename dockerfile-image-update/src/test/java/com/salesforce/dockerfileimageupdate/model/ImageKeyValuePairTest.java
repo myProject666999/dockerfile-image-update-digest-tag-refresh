@@ -16,7 +16,7 @@ public class ImageKeyValuePairTest {
                 {"image:    dockerimage:3#   some   comment",         "image: dockerimage:3 #   some   comment"},
                 {"        image:       dockerimage   ",               "        image: dockerimage"},
                 {"\t image: \t dockerimage:4 \t #comment",            "image: dockerimage:4 #comment"},
-                {"image: dockerimage:4:4:4 #comment",                 "image: dockerimage:4 #comment"},
+                {"image: dockerimage:4:4:4 #comment",                 "image: dockerimage:4:4:4 #comment"},
                 {"image: dockerimage:4 #comment me # # ",             "image: dockerimage:4 #comment me # # "}
         };
     }
@@ -84,7 +84,7 @@ public class ImageKeyValuePairTest {
     public Object[][] tagData() {
         return new Object[][] {
                 {"image: image:some-tag",                       "some-tag"},
-                {"image: image:some-tag:with:weird:other:tags", "some-tag"},
+                {"image: image:some-tag:with:weird:other:tags", "tags"},
                 {"image: image",                                null},
                 {"image: image:",                               null},
                 {"image: image@some-digest",                    null},

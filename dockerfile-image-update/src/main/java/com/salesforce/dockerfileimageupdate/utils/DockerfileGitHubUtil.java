@@ -9,6 +9,7 @@
 package com.salesforce.dockerfileimageupdate.utils;
 
 import com.google.common.collect.Multimap;
+import com.salesforce.dockerfileimageupdate.digest.DigestUpdateContext;
 import com.salesforce.dockerfileimageupdate.model.*;
 import com.salesforce.dockerfileimageupdate.repository.GitHub;
 import com.salesforce.dockerfileimageupdate.search.GitHubImageSearchTermList;
@@ -35,11 +36,27 @@ public class DockerfileGitHubUtil {
     private final GitHubUtil gitHubUtil;
     private static final String NO_DFIU = "no-dfiu";
 
+    /**
+     * Decides how references that pin a digest are updated. Defaults to leaving digest
+     * references untouched; the command line installs a resolving context per run.
+     */
+    private DigestUpdateContext digestUpdateContext = DigestUpdateContext.withoutResolution();
+
     public DockerfileGitHubUtil(GitHubUtil gitHubUtil) {
         this.gitHubUtil = gitHubUtil;
     }
 
     public GitHubUtil getGitHubUtil() { return gitHubUtil; }
+
+    public DigestUpdateContext getDigestUpdateContext() {
+        return digestUpdateContext;
+    }
+
+    public void setDigestUpdateContext(DigestUpdateContext digestUpdateContext) {
+        this.digestUpdateContext = digestUpdateContext == null
+                ? DigestUpdateContext.withoutResolution()
+                : digestUpdateContext;
+    }
 
     /**
      * Return an existing fork in the current user's org or create one if it does not exist
@@ -310,6 +327,7 @@ public class DockerfileGitHubUtil {
                                         BufferedReader reader, StringBuilder strB,
                                         String ignoreImageString) throws IOException {
         String line;
+        String previousLine = null;
         boolean modified = false;
         while ( (line = reader.readLine()) != null ) {
             if (ignorePRCommentPresent(line, ignoreImageString)) {
@@ -318,19 +336,65 @@ public class DockerfileGitHubUtil {
                 // Skip the next Line so it is not processed for PR creation
                 line = reader.readLine();
                 strB.append(line).append("\n");
+                previousLine = line;
                 continue;
             }
             /* Once true, should stay true. */
-            modified = changeIfDockerfileBaseImageLine(img, tag, strB, line) || modified;
+            boolean lineModified = changeIfDockerfileBaseImageLine(img, tag, strB, line);
+            if (lineModified) {
+                reportStaleCommentAbove(previousLine, line);
+            }
+            modified = lineModified || modified;
+            previousLine = line;
         }
         return modified;
     }
 
     /**
-     * This method will read a line and see if the line contains a FROM instruction(Dockerfile) or imageKeyValuePair instruction(docker-compose) with the specified
-     * {@code imageToFind}. If the image does not have the given {@code tag} then {@code stringBuilder}
+     * If the comment directly above a reference we just updated still mentions the old tag,
+     * leave the comment as it is but note it in the run report so a human can follow up.
+     */
+    private void reportStaleCommentAbove(String previousLine, String updatedFromLine) {
+        if (previousLine == null || !previousLine.trim().startsWith("#")) {
+            return;
+        }
+        String oldTag = extractTag(updatedFromLine);
+        if (oldTag != null && previousLine.contains(oldTag)) {
+            digestUpdateContext.report(String.format(
+                    "The comment above '%s' still mentions the old tag '%s'; the comment was left unchanged: %s",
+                    updatedFromLine.trim(), oldTag, previousLine.trim()));
+        }
+    }
+
+    /**
+     * Best-effort extraction of the tag from a FROM / image: / ARG line; null when the line
+     * has no tag or is none of those instructions.
+     */
+    protected static String extractTag(String line) {
+        if (FromInstruction.isFromInstruction(line)) {
+            return new FromInstruction(line).getTag();
+        }
+        if (ImageKeyValuePair.isImageKeyValuePair(line)) {
+            return new ImageKeyValuePair(line).getTag();
+        }
+        if (ArgInstruction.isArgInstruction(line)) {
+            ImageReference defaultValue = new ArgInstruction(line).getDefaultValue();
+            return defaultValue == null ? null : defaultValue.getTag();
+        }
+        return null;
+    }
+
+    /**
+     * This method will read a line and see if the line contains a FROM instruction(Dockerfile),
+     * an imageKeyValuePair instruction(docker-compose) or an ARG instruction whose default
+     * value is a full image reference, with the specified {@code imageToFind}. If the image
+     * does not have the given {@code tag} then {@code stringBuilder}
      * will get a modified version of the line with the new {@code tag}. We return {@code true} in this
      * instance.
+     *
+     * References that pin a digest are updated atomically through the
+     * {@link DigestUpdateContext}: the new tag and its resolved digest are written back
+     * together, and any resolution failure leaves the whole line unchanged.
      *
      * If the inbound {@code line} does not qualify for changes or if the tag is already correct, the
      * {@code stringBuilder} will get {@code line} added to it. We return {@code false} in this instance.
@@ -347,25 +411,49 @@ public class DockerfileGitHubUtil {
         boolean modified = false;
         String outputLine = line;
 
-        // Only check/modify lines which contain a FROM instruction or imageKeyValuePair instruction
+        // Only check/modify lines which contain a FROM instruction, imageKeyValuePair instruction
+        // or an ARG instruction with an image reference as default value
         if (FromInstruction.isFromInstruction(line)) {
             FromInstruction fromInstruction = new FromInstruction(line);
 
-            if (fromInstruction.hasBaseImage(imageToFind) &&
-                    fromInstruction.hasADifferentTag(tag)) {
-                fromInstruction = fromInstruction.getFromInstructionWithNewTag(tag);
-                modified = true;
+            if (fromInstruction.hasBaseImage(imageToFind)) {
+                Optional<ImageReference> updated = digestUpdateContext.planUpdate(
+                        fromInstruction.getImageReference(), tag, "FROM instruction");
+                if (updated.isPresent() && !updated.get().equals(fromInstruction.getImageReference())) {
+                    fromInstruction = fromInstruction.getFromInstructionWithNewTagAndDigest(
+                            updated.get().getTag(), updated.get().getDigest());
+                    modified = true;
+                }
             }
             outputLine = fromInstruction.toString();
         } else if (ImageKeyValuePair.isImageKeyValuePair(line)) {
             ImageKeyValuePair imageKeyValuePair = new ImageKeyValuePair(line);
-            if (imageKeyValuePair.hasBaseImage(imageToFind) &&
-                    imageKeyValuePair.hasADifferentTag(tag) &&
-                    DockerfileGitHubUtil.isValidImageTag(imageKeyValuePair.getTag())) {
-                imageKeyValuePair = imageKeyValuePair.getImageKeyValuePairWithNewTag(tag);
-                modified = true;
+            if (imageKeyValuePair.hasBaseImage(imageToFind)
+                    && (imageKeyValuePair.hasDigest()
+                        || DockerfileGitHubUtil.isValidImageTag(imageKeyValuePair.getTag()))) {
+                Optional<ImageReference> updated = digestUpdateContext.planUpdate(
+                        imageKeyValuePair.getImageReference(), tag, "image key-value pair");
+                if (updated.isPresent() && !updated.get().equals(imageKeyValuePair.getImageReference())) {
+                    imageKeyValuePair = imageKeyValuePair.getImageKeyValuePairWithNewTagAndDigest(
+                            updated.get().getTag(), updated.get().getDigest());
+                    modified = true;
+                }
             }
             outputLine = imageKeyValuePair.toString();
+        } else if (ArgInstruction.isArgInstruction(line)) {
+            ArgInstruction argInstruction = new ArgInstruction(line);
+            ImageReference defaultValue = argInstruction.getDefaultValue();
+            if (defaultValue != null && defaultValue.hasBaseImage(imageToFind)) {
+                // Update the ARG default declaration itself; instructions that consume the
+                // variable (e.g. FROM ${BASE_IMAGE}) keep referencing it and are untouched.
+                Optional<ImageReference> updated = digestUpdateContext.planUpdate(
+                        defaultValue, tag, "ARG default value");
+                if (updated.isPresent() && !updated.get().equals(defaultValue)) {
+                    argInstruction = argInstruction.withDefaultValue(updated.get());
+                    modified = true;
+                }
+            }
+            outputLine = argInstruction.toString();
         }
         stringBuilder.append(outputLine).append("\n");
         return modified;

@@ -9,6 +9,11 @@
 package com.salesforce.dockerfileimageupdate;
 
 import com.google.common.reflect.ClassPath;
+import com.salesforce.dockerfileimageupdate.digest.CachingDigestResolver;
+import com.salesforce.dockerfileimageupdate.digest.DigestResolver;
+import com.salesforce.dockerfileimageupdate.digest.DigestUpdateContext;
+import com.salesforce.dockerfileimageupdate.digest.RegistryCredentialsProvider;
+import com.salesforce.dockerfileimageupdate.digest.RegistryHttpDigestResolver;
 import com.salesforce.dockerfileimageupdate.subcommands.ExecutableWithNamespace;
 import com.salesforce.dockerfileimageupdate.utils.DockerfileGitHubUtil;
 import com.salesforce.dockerfileimageupdate.utils.GitHubUtil;
@@ -55,9 +60,22 @@ public class CommandLine {
             System.exit(1);
         Class<?> runClass = loadCommand(allClasses, ns.get(COMMAND));
         DockerfileGitHubUtil dockerfileGitHubUtil = initializeDockerfileGithubUtil(gitApiUrl(ns), gitApiToken(), ns.getBoolean(DEBUG));
+        dockerfileGitHubUtil.setDigestUpdateContext(buildDigestUpdateContext(ns));
 
         /* Execute given command. */
         ((ExecutableWithNamespace)runClass.getDeclaredConstructor().newInstance()).execute(ns, dockerfileGitHubUtil);
+    }
+
+    /**
+     * Build the per-run context used to update image references that pin a digest. The
+     * resolver chain caches resolutions in memory for this run only; registry credentials
+     * for private registries come from the environment.
+     */
+    static DigestUpdateContext buildDigestUpdateContext(final Namespace ns) {
+        DigestResolver resolver = new CachingDigestResolver(
+                new RegistryHttpDigestResolver(RegistryCredentialsProvider.fromEnvironment()));
+        boolean refreshDigestOnSameTag = !ns.getBoolean(DISABLE_SAME_TAG_DIGEST_REFRESH);
+        return new DigestUpdateContext(resolver, refreshDigestOnSameTag);
     }
 
     static ArgumentParser getArgumentParser() {
@@ -112,6 +130,12 @@ public class CommandLine {
                 .setDefault(false) //To prevent null from being returned by the argument
                 .required(false)
                 .help("Enable debug logging, including git wire logs.");
+        parser.addArgument("--" + DISABLE_SAME_TAG_DIGEST_REFRESH)
+                .action(Arguments.storeTrue())
+                .help("When an image reference pins a digest and its tag is unchanged but was "
+                        + "republished to a new digest, the digest is refreshed by default. "
+                        + "This flag disables that refresh so pinned digests stay untouched "
+                        + "when the tag does not change.");
         return parser;
     }
 

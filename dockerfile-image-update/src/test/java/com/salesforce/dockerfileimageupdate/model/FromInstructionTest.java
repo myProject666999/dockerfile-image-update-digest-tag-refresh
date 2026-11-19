@@ -17,7 +17,7 @@ public class FromInstructionTest {
                 {"FROM    dockerimage:3#   some   comment",         "FROM dockerimage:3 #   some   comment"},
                 {"        FROM       dockerimage   ",               "FROM dockerimage"},
                 {"\t FROM \t dockerimage:4 \t #comment",            "FROM dockerimage:4 #comment"},
-                {"FROM dockerimage:4:4:4 #comment",                 "FROM dockerimage:4 #comment"},
+                {"FROM dockerimage:4:4:4 #comment",                 "FROM dockerimage:4:4:4 #comment"},
                 {"FROM dockerimage:4 #comment me # # ",             "FROM dockerimage:4 #comment me # # "}
         };
     }
@@ -85,7 +85,7 @@ public class FromInstructionTest {
     public Object[][] tagData() {
         return new Object[][] {
                 {"FROM image:some-tag",                       "some-tag"},
-                {"FROM image:some-tag:with:weird:other:tags", "some-tag"},
+                {"FROM image:some-tag:with:weird:other:tags", "tags"},
                 {"FROM image",                                null},
                 {"FROM image:",                               null},
                 {"FROM image@some-digest",                    null},

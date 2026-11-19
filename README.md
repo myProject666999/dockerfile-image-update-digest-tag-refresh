@@ -207,6 +207,45 @@ optional arguments:
   -h, --help             show this help message and exit
 ```
 
+### Image references that pin a digest
+
+References of the form `image:tag@sha256:...` pin content by digest: the digest, not the
+tag, decides what gets pulled. The tool therefore updates tag and digest **atomically** —
+it resolves the digest of the new tag from the registry and writes both back together. If
+the digest cannot be resolved (missing tag, registry error, auth failure), the whole
+reference is left untouched and the reason is included in the run report.
+
+The kind of the pinned digest is preserved per reference:
+
+* a reference pinning a **manifest list** digest gets the new tag's manifest list digest;
+* a reference pinning a **single platform** manifest digest gets the same platform's
+  digest from the new tag.
+
+The kind is identified against the registry (fetching the old digest itself if the tag was
+republished since it was pinned). If the old digest no longer exists and its kind cannot be
+determined, the reference is conservatively left unchanged and reported.
+
+Other digest-related behavior:
+
+* References with **only a digest** (`image@sha256:...`, no tag) are never modified; they
+  exist to pin exact content.
+* If the tag is **unchanged but was republished** to a new digest (a common way to ship
+  security patches), the digest is refreshed. Pass `--disablesametagdigestrefresh` to turn
+  this off and keep pinned digests untouched when the tag does not change.
+* `ARG` defaults that are full image references (e.g. `ARG BASE=img:1.0@sha256:...`) are
+  updated at the declaration; instructions consuming the variable (`FROM ${BASE}`) are
+  left alone.
+* A comment above an updated reference that still mentions the old tag is not modified,
+  but is called out in the run report.
+* Digest resolutions are cached in memory per run and per (image, tag): many files
+  referencing the same `image:tag` cost a single registry request, concurrent lookups are
+  merged, failures are not cached, and retries per tag are bounded. Nothing is persisted
+  across runs.
+* Private registries: provide credentials through the `DFIU_REGISTRY_CREDENTIALS`
+  environment variable as comma-separated `host=user:password` entries, e.g.
+  `export DFIU_REGISTRY_CREDENTIALS="my.registry.com=robot:secret"`. If a registry cannot
+  be queried, affected references are left unchanged and reported.
+
 ### Skip An Image
 
 In case you want the tool to skip updating a particular image tag then add a comment `no-dfiu` after the `FROM` declaration in the Dockerfile. The tool will process the comment following `FROM` declaration and if `no-dfiu` is mentioned, pull request for that image tag will be ignored. You can use an alternate comment string by passing an additional command line parameter `-x IGNORE_IMAGE_STRING`. In that case string mentioned with the parameter, will be used for skipping PR creation.

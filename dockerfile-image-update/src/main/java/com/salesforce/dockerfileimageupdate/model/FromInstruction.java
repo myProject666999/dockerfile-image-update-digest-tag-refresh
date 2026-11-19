@@ -23,6 +23,10 @@ public class FromInstruction {
      */
     private final String tag;
     /**
+     * The digest of the base image (e.g. {@code sha256:...}), when the reference pins one
+     */
+    private final String digest;
+    /**
      * As of writing, this could include {@code AS name} to run a multi-stage build
      */
     private final List<String> additionalParts;
@@ -54,16 +58,13 @@ public class FromInstruction {
         String[] lineParts = lineWithoutComment.split("\\s+");
 
         if (lineParts.length > 1) {
-            // The image will be after the FROM part
-            String dockerFileImage = lineParts[1];
-            String[] imageAndTag = dockerFileImage.split(":");
-            baseImageName = imageAndTag[0];
-
-            if (imageAndTag.length > 1) {
-                tag = imageAndTag[1];
-            } else {
-                tag = null;
-            }
+            // The image will be after the FROM part; parse name, tag and any pinned digest.
+            // The tag is the part after the last ':' following the last '/', so registry
+            // hosts with ports (host:5000/img:1.0) are parsed correctly.
+            ImageReference imageReference = ImageReference.parse(lineParts[1]);
+            baseImageName = imageReference.getName();
+            tag = imageReference.getTag();
+            digest = imageReference.getDigest();
 
             if (lineParts.length > 2) {
                 additionalParts = ImmutableList.copyOf(Arrays.asList(lineParts).subList(2, lineParts.length));
@@ -73,6 +74,7 @@ public class FromInstruction {
         } else {
             baseImageName = null;
             tag = null;
+            digest = null;
             additionalParts = ImmutableList.of();
         }
     }
@@ -81,12 +83,14 @@ public class FromInstruction {
      * Internal API to get a new FromInstruction from an existing object
      * @param baseImageName baseImageName to add
      * @param tag tag to add
+     * @param digest digest to add
      * @param additionalParts additionalParts to add
      * @param comments comments to add
      */
-    private FromInstruction(String baseImageName, String tag, List<String> additionalParts, String comments) {
+    private FromInstruction(String baseImageName, String tag, String digest, List<String> additionalParts, String comments) {
         this.baseImageName = baseImageName;
         this.tag = tag;
+        this.digest = digest;
         this.additionalParts = ImmutableList.copyOf(additionalParts);
         this.comments = comments;
     }
@@ -114,7 +118,27 @@ public class FromInstruction {
      * @return a new FROM with the new image tag
      */
     public FromInstruction getFromInstructionWithNewTag(String newTag) {
-        return new FromInstruction(baseImageName, newTag, additionalParts, comments);
+        return new FromInstruction(baseImageName, newTag, digest, additionalParts, comments);
+    }
+
+    /**
+     * Get a new {@code FromInstruction} the same as this but with both the tag and the digest
+     * replaced. Tag and digest must always be written back together: the digest is what
+     * determines the pulled content, so updating only the tag would silently keep pulling
+     * the old image.
+     * @param newTag the new image tag
+     * @param newDigest the digest that {@code newTag} currently resolves to
+     * @return a new FROM with the new image tag and digest
+     */
+    public FromInstruction getFromInstructionWithNewTagAndDigest(String newTag, String newDigest) {
+        return new FromInstruction(baseImageName, newTag, newDigest, additionalParts, comments);
+    }
+
+    /**
+     * @return this instruction's image reference (name, tag and digest)
+     */
+    public ImageReference getImageReference() {
+        return new ImageReference(baseImageName, tag, digest);
     }
 
     /**
@@ -139,6 +163,9 @@ public class FromInstruction {
         stringBuilder.append(baseImageName);
         if (hasTag()) {
             stringBuilder.append(String.format(":%s", tag.trim()));
+        }
+        if (hasDigest()) {
+            stringBuilder.append(String.format("@%s", digest.trim()));
         }
         for (String part : additionalParts) {
             if (StringUtils.isNotBlank(part)) {
@@ -174,6 +201,17 @@ public class FromInstruction {
      */
     public boolean hasTag() {
         return tag != null;
+    }
+
+    /**
+     * @return whether the {@code FromInstruction} pins a {@code digest}
+     */
+    public boolean hasDigest() {
+        return digest != null;
+    }
+
+    public String getDigest() {
+        return digest;
     }
 
     /**
